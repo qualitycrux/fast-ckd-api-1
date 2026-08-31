@@ -1,6 +1,8 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from contextlib import asynccontextmanager
+from sklearn.preprocessing import LabelEncoder
 import pickle
 import pandas as pd
 import uvicorn
@@ -9,24 +11,28 @@ import os
 # -------------------------------------------------------------------
 # Load ML Models
 # -------------------------------------------------------------------
-MODEL_PATH = "model-kidney-desease.pkl"
-SCALER_PATH = "scaller-kidney-desease.pkl"
+models = {}
+scalers={}
+async def lifespan(app: FastAPI):
+    models['ckd_quick'] = pickle.load(open('model-kidney-desease.pkl', 'rb'))
+    scalers['ckd_quick'] = pickle.load(open('scaller-kidney-desease.pkl', 'rb'))
+    models['ckd_advance'] = pickle.load(open('model-kidney-disease.pkl', 'rb'))
+    scalers['ckd_advance'] = pickle.load(open('scaller-kidney-disease.pkl', 'rb'))
 
-try:
-    with open(MODEL_PATH, "rb") as f:
-        model = pickle.load(f)
-    with open(SCALER_PATH, "rb") as f:
-        scaler = pickle.load(f)
-except Exception as e:
-    raise RuntimeError(f"Error loading model files: {str(e)}")
+    yield  # The API runs while this line stays active
 
+    # 2. Clean up or release memory during shutdown (Optional)
+    print("Clearing models from memory...")
+    models.clear()
+    scalers.clear()
 # -------------------------------------------------------------------
 # FastAPI App Initialization & CORS Setup
 # -------------------------------------------------------------------
 app = FastAPI(
     title="Chronic Kidney Disease Prediction API",
     description="ML Inference service for React & Laravel integration",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan,
 )
 
 # Enable CORS for React and Laravel origins
@@ -41,18 +47,38 @@ app.add_middleware(
 # -------------------------------------------------------------------
 # Input Request Schema Validation
 # -------------------------------------------------------------------
-class PatientData(BaseModel):
-    age: float = Field(..., ge=1, le=120, example=48)
-    bp: float = Field(..., ge=40, le=200, example=80)
-    sg: float = Field(..., ge=1.000, le=1.060, example=1.020)
-    al: float = Field(..., ge=0.0, le=5.0, example=1.0)
-    hemo: float = Field(..., ge=5.0, le=20.0, example=15.4)
-    sc: float = Field(..., ge=0.5, le=10.0, example=1.2)
-    htn: str = Field(..., example="yes")
-    dm: str = Field(..., example="no")
-    cad: str = Field(..., example="no")
-    appet: str = Field(..., example="good")
-    pc: str = Field(..., example="normal")
+class PatientDataQuick(BaseModel):
+    age: float
+    bp: float
+    sg: float
+    al: float
+    hemo: float
+    sc: float
+    htn: str
+    dm: str
+    cad: str
+    appet: str
+    pc: str
+class PatientDataAdvance(BaseModel):
+    age: float
+    bp: float
+    sg: float
+    al: float
+    hemo: float
+    pcv: float
+    rc: float
+    bu: float
+    bgr: float
+    sc: float
+    sod: float
+    pot: float
+    htn: str
+    dm: str
+    cad: str
+    appet: str
+    pc: str
+    pe: str
+    ane: str
 
 class PredictionResponse(BaseModel):
     prediction: int
@@ -62,9 +88,7 @@ class PredictionResponse(BaseModel):
 # -------------------------------------------------------------------
 # Category Mappings (Replaces single-fit LabelEncoder)
 # -------------------------------------------------------------------
-BINARY_MAP = {"no": 0, "yes": 1}
-APPET_MAP = {"good": 0, "poor": 1}
-PC_MAP = {"normal": 0, "abnormal": 1}
+
 
 # -------------------------------------------------------------------
 # Routes
@@ -73,20 +97,12 @@ PC_MAP = {"normal": 0, "abnormal": 1}
 def health_check():
     return {"status": "healthy", "service": "Kidney Disease Prediction API"}
 
-@app.post("/predict", response_model=PredictionResponse)
-def predict_disease(data: PatientData):
+@app.post("/predict/quick", response_model=PredictionResponse)
+def predict_disease_quick(data: PatientDataQuick):
     try:
-        # 1. Normalize and Map Categorical Variables
-        htn_enc = BINARY_MAP.get(data.htn.lower())
-        dm_enc = BINARY_MAP.get(data.dm.lower())
-        cad_enc = BINARY_MAP.get(data.cad.lower())
-        appet_enc = APPET_MAP.get(data.appet.lower())
-        pc_enc = PC_MAP.get(data.pc.lower())
 
-        if None in [htn_enc, dm_enc, cad_enc, appet_enc, pc_enc]:
-            raise HTTPException(status_code=400, detail="Invalid categorical value provided.")
 
-        # 2. Build DataFrame matching original training feature order
+        # 1. Build DataFrame matching original training feature order
         input_data = {
             'age': [data.age],
             'bp': [data.bp],
@@ -94,19 +110,88 @@ def predict_disease(data: PatientData):
             'al': [data.al],
             'hemo': [data.hemo],
             'sc': [data.sc],
-            'htn': [htn_enc],
-            'dm': [dm_enc],
-            'cad': [cad_enc],
-            'appet': [appet_enc],
-            'pc': [pc_enc]
+            'htn': [data.htn],
+            'dm': [data.dm],
+            'cad': [data.cad],
+            'appet': [data.appet],
+            'pc': [data.pc]
         }
         df = pd.DataFrame(input_data)
 
+        # 2. Normalize and Categorical Variables
+        le = LabelEncoder()
+        df['htn'] = le.fit_transform(df['htn'])
+        df['dm'] = le.fit_transform(df['dm'])
+        df['cad'] = le.fit_transform(df['cad'])
+        df['appet'] = le.fit_transform(df['appet'])
+        df['pc'] = le.fit_transform(df['pc'])
+
         # 3. Scale numeric features using the pre-fitted scaler
         numeric_cols = ['age', 'bp', 'sg', 'al', 'hemo', 'sc']
+        scaler=scalers["ckd_quick"]
+
         df[numeric_cols] = scaler.transform(df[numeric_cols])
 
         # 4. Predict
+        model=models['ckd_quick']
+        prediction = int(model.predict(df)[0])
+        has_disease = (prediction == 0)
+
+        return PredictionResponse(
+            prediction=prediction,
+            has_disease=has_disease,
+            message="The patient is likely to have Chronic Kidney Disease." if has_disease else "The patient is NOT likely to have Chronic Kidney Disease."
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/predict/advance", response_model=PredictionResponse)
+def predict_disease_advance(data: PatientDataAdvance):
+    try:
+        # 1. Build DataFrame matching original training feature order
+
+        input_data = {
+            'age': [data.age],
+            'bp': [data.bp],
+            'sg': [data.sg],
+            'al': [data.al],
+            'hemo': [data.hemo],
+            'pcv': [data.pcv],
+            'rc': [data.rc],
+            'bu': [data.bu],
+            'bgr': [data.bgr],
+            'sc': [data.sc],
+            'sod': [data.sod],
+            'pot': [data.pot],
+            'htn': [data.htn],
+            'dm': [data.dm],
+            'cad': [data.cad],
+            'appet': [data.appet],
+            'pc': [data.pc],
+            'pe': [data.pe],
+            'ane': [data.ane],
+        }
+        df = pd.DataFrame(input_data)
+
+        # 2. Normalize and Categorical Variables
+        le = LabelEncoder()
+        df['htn'] = le.fit_transform(df['htn'])
+        df['dm'] = le.fit_transform(df['dm'])
+        df['cad'] = le.fit_transform(df['cad'])
+        df['appet'] = le.fit_transform(df['appet'])
+        df['pc'] = le.fit_transform(df['pc'])
+        df['pe'] = le.fit_transform(df['pe'])
+        df['ane'] = le.fit_transform(df['ane'])
+
+        # 3. Scale numeric features using the pre-fitted scaler
+        numeric_cols=['age','bp','sg','al','hemo','pcv','rc','bu','bgr','sc','sod','pot']
+        scaler=scalers["ckd_advance"]
+
+        df[numeric_cols] = scaler.transform(df[numeric_cols])
+
+        # 4. Predict
+        model=models['ckd_advance']
         prediction = int(model.predict(df)[0])
         has_disease = (prediction == 0)
 
@@ -120,5 +205,5 @@ def predict_disease(data: PatientData):
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
+    port = int(os.environ.get("PORT", 8800))
+    uvicorn.run("main:app", host="127.0.0.1", port=port, reload=True)
