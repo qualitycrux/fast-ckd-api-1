@@ -1,30 +1,36 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from contextlib import asynccontextmanager
 from sklearn.preprocessing import LabelEncoder
 import pickle
 import pandas as pd
 import uvicorn
 import os
+from pathlib import Path
+
+# Build paths relative to this file's location
+BASE_DIR = Path(__file__).resolve().parent
 
 # -------------------------------------------------------------------
 # Load ML Models
 # -------------------------------------------------------------------
 models = {}
-scalers={}
+scalers = {}
+
+@asynccontextmanager
 async def lifespan(app: FastAPI):
-    models['ckd_quick'] = pickle.load(open('model-kidney-desease.pkl', 'rb'))
-    scalers['ckd_quick'] = pickle.load(open('scaller-kidney-desease.pkl', 'rb'))
-    models['ckd_advance'] = pickle.load(open('model-kidney-disease.pkl', 'rb'))
-    scalers['ckd_advance'] = pickle.load(open('scaller-kidney-disease.pkl', 'rb'))
+    models['ckd_quick'] = pickle.load(open(BASE_DIR / 'model-kidney-desease.pkl', 'rb'))
+    scalers['ckd_quick'] = pickle.load(open(BASE_DIR / 'scaller-kidney-desease.pkl', 'rb'))
+    models['ckd_advance'] = pickle.load(open(BASE_DIR / 'model-kidney-disease.pkl', 'rb'))
+    scalers['ckd_advance'] = pickle.load(open(BASE_DIR / 'scaller-kidney-disease.pkl', 'rb'))
 
-    yield  # The API runs while this line stays active
+    yield  # API active state
 
-    # 2. Clean up or release memory during shutdown (Optional)
     print("Clearing models from memory...")
     models.clear()
     scalers.clear()
+
 # -------------------------------------------------------------------
 # FastAPI App Initialization & CORS Setup
 # -------------------------------------------------------------------
@@ -35,10 +41,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Enable CORS for React and Laravel origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Replace with specific domains in production (e.g., ["http://localhost:3000", "http://localhost:8000"])
+    allow_origins=["*"],  # Restrict to specific origins in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -59,6 +64,7 @@ class PatientDataQuick(BaseModel):
     cad: str
     appet: str
     pc: str
+
 class PatientDataAdvance(BaseModel):
     age: float
     bp: float
@@ -86,11 +92,6 @@ class PredictionResponse(BaseModel):
     message: str
 
 # -------------------------------------------------------------------
-# Category Mappings (Replaces single-fit LabelEncoder)
-# -------------------------------------------------------------------
-
-
-# -------------------------------------------------------------------
 # Routes
 # -------------------------------------------------------------------
 @app.get("/")
@@ -100,9 +101,6 @@ def health_check():
 @app.post("/predict/quick", response_model=PredictionResponse)
 def predict_disease_quick(data: PatientDataQuick):
     try:
-
-
-        # 1. Build DataFrame matching original training feature order
         input_data = {
             'age': [data.age],
             'bp': [data.bp],
@@ -118,7 +116,6 @@ def predict_disease_quick(data: PatientDataQuick):
         }
         df = pd.DataFrame(input_data)
 
-        # 2. Normalize and Categorical Variables
         le = LabelEncoder()
         df['htn'] = le.fit_transform(df['htn'])
         df['dm'] = le.fit_transform(df['dm'])
@@ -126,14 +123,12 @@ def predict_disease_quick(data: PatientDataQuick):
         df['appet'] = le.fit_transform(df['appet'])
         df['pc'] = le.fit_transform(df['pc'])
 
-        # 3. Scale numeric features using the pre-fitted scaler
         numeric_cols = ['age', 'bp', 'sg', 'al', 'hemo', 'sc']
-        scaler=scalers["ckd_quick"]
+        scaler = scalers["ckd_quick"]
 
         df[numeric_cols] = scaler.transform(df[numeric_cols])
 
-        # 4. Predict
-        model=models['ckd_quick']
+        model = models['ckd_quick']
         prediction = int(model.predict(df)[0])
         has_disease = (prediction == 0)
 
@@ -149,8 +144,6 @@ def predict_disease_quick(data: PatientDataQuick):
 @app.post("/predict/advance", response_model=PredictionResponse)
 def predict_disease_advance(data: PatientDataAdvance):
     try:
-        # 1. Build DataFrame matching original training feature order
-
         input_data = {
             'age': [data.age],
             'bp': [data.bp],
@@ -174,7 +167,6 @@ def predict_disease_advance(data: PatientDataAdvance):
         }
         df = pd.DataFrame(input_data)
 
-        # 2. Normalize and Categorical Variables
         le = LabelEncoder()
         df['htn'] = le.fit_transform(df['htn'])
         df['dm'] = le.fit_transform(df['dm'])
@@ -184,14 +176,12 @@ def predict_disease_advance(data: PatientDataAdvance):
         df['pe'] = le.fit_transform(df['pe'])
         df['ane'] = le.fit_transform(df['ane'])
 
-        # 3. Scale numeric features using the pre-fitted scaler
-        numeric_cols=['age','bp','sg','al','hemo','pcv','rc','bu','bgr','sc','sod','pot']
-        scaler=scalers["ckd_advance"]
+        numeric_cols = ['age','bp','sg','al','hemo','pcv','rc','bu','bgr','sc','sod','pot']
+        scaler = scalers["ckd_advance"]
 
         df[numeric_cols] = scaler.transform(df[numeric_cols])
 
-        # 4. Predict
-        model=models['ckd_advance']
+        model = models['ckd_advance']
         prediction = int(model.predict(df)[0])
         has_disease = (prediction == 0)
 
@@ -205,5 +195,7 @@ def predict_disease_advance(data: PatientDataAdvance):
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8800))
-    uvicorn.run("main:app", host="127.0.0.1", port=port, reload=True)
+    port = int(os.environ.get("PORT", 8000))
+    # Host changed to 0.0.0.0 to allow incoming external connections on Railway
+    # Turned reload OFF for production stability
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
