@@ -24,8 +24,8 @@ async def lifespan(app: FastAPI):
     scalers['ckd_quick'] = pickle.load(open(BASE_DIR / 'scaller-kidney-desease.pkl', 'rb'))
     models['ckd_advance'] = pickle.load(open(BASE_DIR / 'model-kidney-disease.pkl', 'rb'))
     scalers['ckd_advance'] = pickle.load(open(BASE_DIR / 'scaller-kidney-disease.pkl', 'rb'))
-    models['diabetic'] = pickle.load(open('model-diab-prediction.pkl', 'rb'))
-    scalers['diabetic'] = pickle.load(open('scaler-diab-prediction.pkl', 'rb'))
+    models['diabetic'] = pickle.load(open(BASE_DIR /'model-diab-prediction.pkl', 'rb'))
+    scalers['diabetic'] = pickle.load(open(BASE_DIR /'scaler-diab-prediction.pkl', 'rb'))
 
     yield  # API active state
 
