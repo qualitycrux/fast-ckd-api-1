@@ -86,6 +86,16 @@ class PatientDataAdvance(BaseModel):
     pe: str
     ane: str
 
+class PatientDataDiabetic(BaseModel):
+    pg: float
+    gc: float
+    bp: float
+    sth: float
+    ins: float
+    bmi: float
+    dpf: float
+    age: float
+    
 class PredictionResponse(BaseModel):
     prediction: int
     has_disease: bool
@@ -193,6 +203,48 @@ def predict_disease_advance(data: PatientDataAdvance):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# diabetic prediction
+@app.post("/predict/diabetic", response_model=PredictionResponse)
+def predict_disease_diabetic(data: PatientDataDiabetic):
+    try:
+        # 1. Build DataFrame matching original training feature order
+        input_data = {
+            'Pregnancies': [data.pg],
+            'Glucose': [data.gc],
+            'BloodPressure': [data.bp],
+            'SkinThickness': [data.sth],
+            'Insulin': [data.ins],
+            'BMI': [data.bmi],
+            'DiabetesPedigreeFunction': [data.dpf],
+            'Age': [data.age]
+        }
+
+        # 2. Create the DataFrame
+        df = pd.DataFrame(input_data)
+
+        # 3. Scale features
+        scaler = scalers["diabetic"]
+        df = scaler.transform(df)
+
+        # 4. Predict
+        model = models['diabetic']
+        raw_prediction = model.predict(df)  
+
+        prediction_val = int(raw_prediction[0])
+        has_disease = (prediction_val == 1)
+
+        return PredictionResponse(
+            prediction=prediction_val,  # Pass the native Python int
+            has_disease=has_disease,
+            message="The patient is likely to have Diabetic Disease." if has_disease else "The patient is NOT likely to have Diabetic Disease."
+        )
+
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
